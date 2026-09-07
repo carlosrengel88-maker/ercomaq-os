@@ -1,0 +1,4 @@
+node_modules/
+.env
+ercomaq.db
+*.log
