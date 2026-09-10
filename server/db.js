@@ -2,7 +2,9 @@ const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
-const DB_FILE = path.join(__dirname, '..', 'ercomaq.db');
+// [AJUSTE] Caminho do banco: usa a variável DB_PATH (volume persistente no Railway)
+// com fallback para o arquivo local (funciona igual no seu PC / Windows Server)
+const DB_FILE = process.env.DB_PATH || path.join(__dirname, '..', 'ercomaq.db');
 let _db = null;
 class Database {
   constructor(sqlDb) {
@@ -57,6 +59,8 @@ class Database {
     try { this._db.exec('PRAGMA ' + sql); } catch (e) {}
   }
   _save() {
+    // [AJUSTE] Garante que a pasta do banco exista antes de salvar (ex.: /data no Railway)
+    fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
     fs.writeFileSync(DB_FILE, Buffer.from(this._db.export()));
   }
 }
@@ -114,6 +118,8 @@ async function init() {
     locateFile: file => path.join(path.dirname(require.resolve('sql.js')), file)
   });
   let sqlDb;
+  // [AJUSTE] Garante a pasta antes de ler o banco (no Railway o volume /data é montado pelo serviço)
+  fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
   if (fs.existsSync(DB_FILE)) {
     sqlDb = new SQL.Database(fs.readFileSync(DB_FILE));
   } else {
@@ -175,6 +181,7 @@ CREATE TABLE IF NOT EXISTS os (
   observacoes TEXT,
   solicitante TEXT,
   tipo_assistencia TEXT NOT NULL DEFAULT 'cobranca' CHECK (tipo_assistencia IN ('cobranca','garantia')),
+  origem_assistencia TEXT DEFAULT '',
   valor_garantia REAL NOT NULL DEFAULT 0,
   valor_cobranca REAL NOT NULL DEFAULT 0,
   horas_encerradas REAL NOT NULL DEFAULT 0,
@@ -349,6 +356,13 @@ COMMIT;`);
   } catch (e) {
     try { _db.exec('ROLLBACK'); } catch (_) {}
   }
+  // Migração: adiciona a coluna origem_assistencia na tabela os (bancos existentes)
+  try {
+    const colsOs3 = _db.prepare('PRAGMA table_info(os)').all().map(c => c.name);
+    if (!colsOs3.includes('origem_assistencia')) {
+      _db.exec("ALTER TABLE os ADD COLUMN origem_assistencia TEXT DEFAULT ''");
+    }
+  } catch (e) {}
   seed();
   return _db;
 }

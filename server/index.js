@@ -51,7 +51,7 @@ function mesLabel(m) {
   const p = String(m).split('-');
   return `${MESES_PT[Number(p[1]) - 1]}/${String(p[0]).slice(2)}`;
 }
-app.get('/api/bi', auth, (req, res) => {
+app.get('/api/bi', auth, requireProfile('admin'), (req, res) => {
   const { de, ate, cliente_id, tecnico_id } = req.query;
   const conds = ["o.data_encerramento IS NOT NULL"];
   const params = [];
@@ -83,8 +83,9 @@ app.get('/api/bi', auth, (req, res) => {
     if (o.tipo_assistencia === 'garantia') kpis.os_garantia++; else kpis.os_cobranca++;
     const mes = (o.data_encerramento || '').slice(0, 7);
     if (mes) {
-      if (!mesesMap.has(mes)) mesesMap.set(mes, { mes, label: mesLabel(mes), horas_garantia: 0, horas_cobranca: 0, valor_garantia: 0, valor_cobranca: 0, os_garantia: 0, os_cobranca: 0 });
+      if (!mesesMap.has(mes)) mesesMap.set(mes, { mes, label: mesLabel(mes), horas_garantia: 0, horas_cobranca: 0, valor_garantia: 0, valor_cobranca: 0, os_garantia: 0, os_cobranca: 0, os_total: 0 });
       const m = mesesMap.get(mes);
+      m.os_total++;
       m.horas_garantia += hg;
       m.horas_cobranca += hc;
       m.valor_garantia += vg;
@@ -101,7 +102,18 @@ app.get('/api/bi', auth, (req, res) => {
   const meses = [...mesesMap.values()].sort((a, b) => a.mes.localeCompare(b.mes));
   const tecnicos = [...tecMap.values()].sort((a, b) => b.horas_total - a.horas_total);
   const clientes = [...cliMap.values()].sort((a, b) => b.valor_total - a.valor_total).slice(0, 10);
-  res.json({ kpis, meses, tecnicos, clientes });
+  // OS por origem — conta TODAS as OS com origem (não só encerradas)
+  const origConds = ["origem_assistencia != ''", "status != 'cancelada'"];
+  const origParams = [];
+  if (de) { origConds.push('data_entrada >= ?'); origParams.push(de); }
+  if (ate) { origConds.push('data_entrada <= ?'); origParams.push(ate); }
+  if (cliente_id) { origConds.push('cliente_id = ?'); origParams.push(cliente_id); }
+  if (tecnico_id) { origConds.push('tecnico_id = ?'); origParams.push(tecnico_id); }
+  const porOrigem = db.prepare(`SELECT origem_assistencia AS origem, COUNT(*) AS os_total,
+      COALESCE(SUM(valor_garantia + valor_cobranca),0) AS valor_total
+    FROM os WHERE ${origConds.join(' AND ')}
+    GROUP BY origem_assistencia ORDER BY os_total DESC`).all(...origParams);
+  res.json({ kpis, meses, tecnicos, clientes, porOrigem });
 });
 /* ---------- Relatórios gerenciais ---------- */
 function relatorioFiltros(de, ate, cliente_id, tecnico_id) {
@@ -122,7 +134,7 @@ function relatorioRows(filtros) {
     LEFT JOIN maquinas m ON m.id=o.maquina_id
     WHERE ${filtros.where} ORDER BY o.data_encerramento`).all(...filtros.params);
 }
-app.get('/api/relatorios/horas', auth, (req, res) => {
+app.get('/api/relatorios/horas', auth, requireProfile('admin'), (req, res) => {
   const filtros = relatorioFiltros(req.query.de, req.query.ate, req.query.cliente_id, req.query.tecnico_id);
   const rows = relatorioRows(filtros).map(o => ({
     numero: o.numero,
@@ -153,7 +165,7 @@ app.get('/api/relatorios/horas', auth, (req, res) => {
   }, { horas_apontadas: 0, horas_garantia: 0, horas_cobranca: 0, horas_total: 0, valor_garantia: 0, valor_cobranca: 0, valor_total: 0, os_total: 0 });
   res.json({ rows, totais });
 });
-app.get('/api/relatorios/faturamento', auth, (req, res) => {
+app.get('/api/relatorios/faturamento', auth, requireProfile('admin'), (req, res) => {
   const filtros = relatorioFiltros(req.query.de, req.query.ate, req.query.cliente_id, req.query.tecnico_id);
   const rows = relatorioRows(filtros).map(o => ({
     numero: o.numero,
@@ -175,7 +187,7 @@ app.get('/api/relatorios/faturamento', auth, (req, res) => {
   }, { valor_garantia: 0, valor_cobranca: 0, valor_total: 0, os_total: 0 });
   res.json({ rows, totais });
 });
-app.get('/api/relatorios/garantias', auth, (req, res) => {
+app.get('/api/relatorios/garantias', auth, requireProfile('admin'), (req, res) => {
   const filtros = relatorioFiltros(req.query.de, req.query.ate, req.query.cliente_id, req.query.tecnico_id);
   filtros.where += " AND o.tipo_assistencia='garantia'";
   const rows = relatorioRows(filtros).map(o => ({
@@ -201,6 +213,28 @@ app.get('/api/relatorios/garantias', auth, (req, res) => {
     t.os_total++;
     return t;
   }, { horas_apontadas: 0, horas_servicos: 0, valor_garantia: 0, valor_cobranca: 0, valor_total: 0, os_total: 0 });
+  res.json({ rows, totais });
+});
+// Relatório de OS por origem da assistência
+app.get('/api/relatorios/origens', auth, requireProfile('admin'), (req, res) => {
+  const { de, ate, cliente_id, tecnico_id } = req.query;
+  const conds = ["o.origem_assistencia != ''", "o.status != 'cancelada'"];
+  const params = [];
+  if (de) { conds.push('o.data_entrada >= ?'); params.push(de); }
+  if (ate) { conds.push('o.data_entrada <= ?'); params.push(ate); }
+  if (cliente_id) { conds.push('o.cliente_id = ?'); params.push(cliente_id); }
+  if (tecnico_id) { conds.push('o.tecnico_id = ?'); params.push(tecnico_id); }
+  const rows = db.prepare(`SELECT o.origem_assistencia AS origem, COUNT(*) AS os_total,
+      SUM(CASE WHEN o.tipo_assistencia='garantia' THEN 1 ELSE 0 END) AS os_garantia,
+      SUM(CASE WHEN o.tipo_assistencia='cobranca' THEN 1 ELSE 0 END) AS os_cobranca,
+      COALESCE(SUM(o.valor_garantia + o.valor_cobranca),0) AS valor_total
+    FROM os o WHERE ${conds.join(' AND ')}
+    GROUP BY o.origem_assistencia ORDER BY os_total DESC`).all(...params);
+  const totais = rows.reduce((t, r) => {
+    t.os_total += r.os_total; t.os_garantia += r.os_garantia; t.os_cobranca += r.os_cobranca;
+    t.valor_total += Number(r.valor_total) || 0;
+    return t;
+  }, { os_total: 0, os_garantia: 0, os_cobranca: 0, valor_total: 0 });
   res.json({ rows, totais });
 });
 /* ---------- Clientes ---------- */
@@ -261,6 +295,7 @@ app.put('/api/catalogo-servicos/:id', auth, (req, res) => {
     .run(b.codigo, b.descricao, b.unidade || 'h', Number(b.valor_unitario) || 0, b.ativo ? 1 : 0, req.params.id);
   res.json({ ok: true });
 });
+// Exclusão de serviço do catálogo — somente admin (desativa o serviço)
 app.delete('/api/catalogo-servicos/:id', auth, requireProfile('admin'), (req, res) => {
   db.prepare('UPDATE catalogo_servicos SET ativo=0 WHERE id=?').run(req.params.id);
   res.json({ ok: true });
@@ -344,6 +379,15 @@ app.put('/api/os/:id', auth, (req, res) => {
       b.tipo_assistencia === 'garantia' ? 'garantia' : (os.tipo_assistencia || 'cobranca'), b.data_entrada || os.data_entrada, now(), os.id);
   res.json({ ok: true });
 });
+// Salvar origem da assistência (revisor/admin)
+app.put('/api/os/:id/origem', auth, requireProfile('revisor', 'admin'), (req, res) => {
+  const os = db.prepare('SELECT * FROM os WHERE id=?').get(req.params.id);
+  if (!os) return res.status(404).json({ error: 'OS não encontrada' });
+  const origem = ((req.body && req.body.origem) || '').trim();
+  db.prepare('UPDATE os SET origem_assistencia=? WHERE id=?').run(origem, req.params.id);
+  addHistorico(os.id, os.status, os.status, origem ? 'Origem da assistência: ' + origem : 'Origem da assistência removida', req.user.id);
+  res.json({ ok: true });
+});
 app.post('/api/os/:id/status', auth, (req, res) => {
   const os = db.prepare('SELECT * FROM os WHERE id=?').get(req.params.id);
   if (!os) return res.status(404).json({ error: 'OS não encontrada' });
@@ -413,6 +457,24 @@ app.post('/api/os/:id/enviar', auth, requireProfile('revisor', 'admin'), (req, r
   notifyEnvioCliente(db.prepare('SELECT * FROM os WHERE id=?').get(os.id), cliente, link, emailsCliente);
   res.json({ ok: true, link });
 });
+// Reenviar e-mail ao cliente (revisor/admin) — mesmo link de aprovação
+app.post('/api/os/:id/reenviar', auth, requireProfile('revisor', 'admin'), (req, res) => {
+  const os = db.prepare('SELECT * FROM os WHERE id=?').get(req.params.id);
+  if (!os) return res.status(404).json({ error: 'OS não encontrada' });
+  if (os.status !== 'aguardando_cliente') {
+    return res.status(400).json({ error: 'Só é possível reenviar o e-mail enquanto a OS aguarda aprovação do cliente' });
+  }
+  if (!os.token_aprovacao) {
+    return res.status(400).json({ error: 'Esta OS ainda não foi enviada ao cliente' });
+  }
+  const cliente = db.prepare('SELECT * FROM clientes WHERE id=?').get(os.cliente_id);
+  const link = `${process.env.APP_URL || 'http://localhost:3000'}/#/aprovacao/${os.token_aprovacao}`;
+  const b = req.body || {};
+  const emailsCliente = (b.emails || '').split(',').map(e => e.trim()).filter(Boolean);
+  notifyEnvioCliente(os, cliente, link, emailsCliente);
+  addHistorico(os.id, os.status, os.status, 'Relatório reenviado ao cliente', req.user.id);
+  res.json({ ok: true, link });
+});
 /* ---------- Aprovação pública do cliente ---------- */
 app.get('/api/public/os/:token', (req, res) => {
   const os = db.prepare('SELECT * FROM os WHERE token_aprovacao=?').get(req.params.token);
@@ -461,6 +523,17 @@ app.post('/api/os/:id/servicos', auth, requireProfile('tecnico', 'revisor', 'adm
   const horas = Number(b.horas) || 1;
   db.prepare('INSERT INTO os_servicos (os_id,catalogo_id,descricao,horas,valor_unitario,valor_total,garantia) VALUES (?,?,?,?,?,?,?)')
     .run(req.params.id, cat.id, cat.descricao, horas, cat.valor_unitario, cat.valor_unitario * horas, b.garantia ? 1 : 0);
+  res.json({ ok: true });
+});
+// Atualizar serviço da OS (usado pelo botão Salvar OS para o checkbox de garantia)
+app.put('/api/os/:id/servicos/:sid', auth, requireProfile('revisor', 'admin'), (req, res) => {
+  const item = db.prepare('SELECT * FROM os_servicos WHERE id=? AND os_id=?').get(req.params.sid, req.params.id);
+  if (!item) return res.status(404).json({ error: 'Serviço não encontrado' });
+  const b = req.body || {};
+  const horas = Number(b.horas ?? item.horas ?? 1);
+  const valorUnit = Number(b.valor_unitario ?? item.valor_unitario ?? 0);
+  db.prepare('UPDATE os_servicos SET descricao=?,horas=?,valor_unitario=?,valor_total=?,garantia=? WHERE id=? AND os_id=?')
+    .run(b.descricao ?? item.descricao, horas, valorUnit, valorUnit * horas, b.garantia ? 1 : 0, req.params.sid, req.params.id);
   res.json({ ok: true });
 });
 app.delete('/api/os/:id/servicos/:sid', auth, requireProfile('tecnico', 'revisor', 'admin'), (req, res) => {

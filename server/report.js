@@ -37,14 +37,14 @@ function generateReportHTML(osId) {
 
   const statusLabel = {
     rascunho: 'Rascunho', em_revisao: 'Em revisão', aguardando_cliente: 'Aguardando cliente',
-    aprovada: 'Aprovada', cobrada: 'Cobrada', cancelada: 'Cancelada'
+    aprovada: 'Aprovada', cobrada: 'Cobrada', recebida: 'Recebida', cancelada: 'Cancelada'
   };
   const tipoLabel = { cobranca: 'Cobrança', garantia: 'Garantia' };
   const totalPecas = materiais.reduce((s, m) => s + (m.valor_total || 0), 0);
   const totalServicos = servicos.reduce((s, x) => s + (x.valor_total || 0), 0);
 
   // Valores de garantia/cobrança: usa os congelados no envio ao cliente (valor de encerramento);
-  // se a OS ainda não foi enviada, calcula direto dos itens
+  // se a OS ainda não foi enviada, calcula direto dos itens (sempre pelo checkbox de cada item)
   const congelado = !!os.data_encerramento;
   const vGarantia = congelado
     ? (os.valor_garantia || 0)
@@ -114,6 +114,7 @@ function generateReportHTML(osId) {
     <h1>ORDEM DE SERVIÇO ${os.numero}</h1>
     <p>Status: ${statusLabel[os.status]} · Entrada: ${brDate(os.data_entrada)}${os.data_saida ? ' · Saída: ' + brDate(os.data_saida) : ''}</p>
     ${os.tipo_assistencia ? `<p>Tipo de assistência: ${tipoLabel[os.tipo_assistencia] || os.tipo_assistencia}</p>` : ''}
+    ${os.origem_assistencia ? `<p>Origem da assistência: ${esc(os.origem_assistencia)}</p>` : ''}
     ${os.assunto ? `<p>Assunto: ${esc(os.assunto)}</p>` : ''}
     <p>Anotado por: ${tecnico.nome}</p>
   </div>
@@ -155,7 +156,7 @@ ${os.tipo_assistencia === 'garantia' ? '<div class="garantia-banner">ASSISTÊNCI
     <span>Valor para cobrança: <strong>${money(vCobranca)}</strong></span>
     <span>Total geral: <strong>${money(totalGeral)}</strong></span>
   </div>
-  ${os.tipo_assistencia === 'garantia' ? '<p style="margin-top:6px"><strong>Assistência em garantia</strong> — valor total coberto pela garantia.</p>' : ''}
+  ${os.tipo_assistencia === 'garantia' ? '<p style="margin-top:6px"><strong>Assistência em garantia</strong> — os valores cobertos são os itens marcados como garantia.</p>' : ''}
 </div></div>
 <div class="vistos"><div class="visto">Visto — Revisor</div><div class="visto">Visto — Cliente</div></div>
 </body>
