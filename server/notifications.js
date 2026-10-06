@@ -7,9 +7,9 @@ const APP_URL = () => process.env.APP_URL || 'http://localhost:3000';
 // Destinatários fixos por perfil (definidos pela Ercomaq)
 const EMAILS = {
   admin: ['carlos@ercomaq.com.br'],
-  revisor: ['carlos@ercomaq.com.br', 'eliseu@ercomaq.com.br'],
+  revisor: ['carlos@ercomaq.com.br'],
   tecnico: ['eletrica@ercomaq.com.br', 'producao@ercomaq.com.br', 'eliseu@ercomaq.com.br'],
-  comercial: ['carlos@ercomaq.com.br', 'comercial@ercomaq.com.br', 'eliseu@ercomaq.com.br']
+  comercial: ['carlos@ercomaq.com.br', 'comercial@ercomaq.com.br']
 };
 
 function esc(s) {
